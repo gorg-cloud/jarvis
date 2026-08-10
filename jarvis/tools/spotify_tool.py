@@ -4,6 +4,8 @@ Controls Spotify.app via AppleScript (no API/OAuth needed).
 """
 import subprocess
 
+from jarvis.platform import macos_only, open_url
+
 VALID_ACTIONS = {
     "play", "pause", "playpause", "next", "previous",
     "next track", "previous track",
@@ -12,6 +14,9 @@ VALID_ACTIONS = {
 
 def control_spotify(action: str) -> dict:
     """Play/pause/skip Spotify."""
+    blocked = macos_only("Spotify control")
+    if blocked:
+        return {"action": action, "status": "failed", "error": blocked}
     a = action.lower().strip()
     if a == "next":
         a = "next track"
@@ -37,6 +42,9 @@ def control_spotify(action: str) -> dict:
 
 def spotify_status() -> dict:
     """Now playing info: track, artist, album, state."""
+    blocked = macos_only("Spotify status")
+    if blocked:
+        return {"error": blocked}
     script = '''
     tell application "Spotify"
       if player state is playing then

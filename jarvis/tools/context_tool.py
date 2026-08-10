@@ -4,9 +4,14 @@ Senses active app + selected text so JARVIS knows what the user is looking at.
 """
 import subprocess
 
+from jarvis.platform import macos_only
+
 
 def frontmost_app() -> dict:
     """Return name + bundle id of the currently focused app."""
+    blocked = macos_only("Frontmost-app sensing")
+    if blocked:
+        return {"error": blocked}
     script = (
         'tell application "System Events"'
         ' to {name of first application process whose frontmost is true, '
@@ -33,6 +38,9 @@ def selected_text() -> dict:
     Get text currently selected in the frontmost app.
     Uses cmd+C via System Events (requires Accessibility permission).
     """
+    blocked = macos_only("Selected-text sensing")
+    if blocked:
+        return {"text": "", "length": 0, "empty": True, "error": blocked}
     # Save current clipboard so we don't destroy it
     saved = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5).stdout
     # Clear clipboard

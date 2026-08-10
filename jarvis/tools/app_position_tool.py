@@ -9,6 +9,8 @@ Or exact: {"x": int, "y": int, "width": int, "height": int} via x/y/w/h args.
 """
 import subprocess
 
+from jarvis.platform import launch_app, macos_only
+
 
 def open_app_positioned(
     app_name: str,
@@ -35,9 +37,12 @@ def open_app_positioned(
     x, y, width, height : int
         Explicit pixel coordinates. If all non-zero, overrides position.
     """
+    blocked = macos_only("Window positioning")
+    if blocked:
+        return {"app": app_name, "status": "failed", "error": blocked}
     # Open app first
     try:
-        subprocess.run(["open", "-a", app_name], capture_output=True, text=True, timeout=10)
+        launch_app(app_name)
     except Exception as e:
         return {"app": app_name, "status": "failed", "error": f"open failed: {e}"}
 

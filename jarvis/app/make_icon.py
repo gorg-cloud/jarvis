@@ -102,6 +102,36 @@ def write_icon_png(path: Path) -> Path:
     return path
 
 
+def write_ico(out_path: Path) -> Path:
+    """Build a Windows .ico from the rendered pixmap (multi-size PNG-ICO)."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    source = render_pixmap(256)
+    sizes = [16, 24, 32, 48, 64, 128, 256]
+    images = []
+    for s in sizes:
+        pm = source.scaled(s, s, Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation)
+        from PyQt6.QtCore import QBuffer  # noqa: PLC0415
+        qbuf = QBuffer()
+        qbuf.open(QBuffer.OpenModeFlag.WriteOnly)
+        pm.save(qbuf, "PNG")
+        images.append((s, bytes(qbuf.data())))
+
+    import struct  # noqa: PLC0415
+    with open(out_path, "wb") as f:
+        f.write(struct.pack("<HHH", 0, 1, len(images)))
+        offset = 6 + 16 * len(images)
+        for s, png in images:
+            w = s if s < 256 else 0
+            h = s if s < 256 else 0
+            f.write(struct.pack("<BBBBHHII", w, h, 0, 0, 1, 32, len(png), offset))
+            offset += len(png)
+        for _, png in images:
+            f.write(png)
+    return out_path
+
+
 def write_icns(out_path: Path, png_path: Path) -> Path:
     """Build a .icns from the 1024px PNG using an iconset + iconutil (macOS)."""
     out_path = Path(out_path)
@@ -131,6 +161,7 @@ def write_icns(out_path: Path, png_path: Path) -> Path:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Generate JARVIS app icons.")
     ap.add_argument("--icns", action="store_true", help="also build icon.icns (macOS)")
+    ap.add_argument("--ico", action="store_true", help="also build icon.ico (Windows)")
     args = ap.parse_args()
 
     here = Path(__file__).resolve().parent
@@ -139,6 +170,9 @@ def main() -> None:
     if args.icns:
         icns = write_icns(here / "icon.icns", png)
         print(f"wrote {icns}")
+    if args.ico:
+        ico = write_ico(here / "icon.ico")
+        print(f"wrote {ico}")
 
 
 if __name__ == "__main__":

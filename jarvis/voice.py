@@ -27,7 +27,11 @@ MAX_IDLE_TURNS = 2
 
 def _beep(sound: str = "Tink") -> None:
     try:
-        subprocess.run(["afplay", f"/System/Library/Sounds/{sound}.aiff"], check=False)
+        if os.name == "nt":
+            import winsound  # noqa: PLC0415
+            winsound.MessageBeep()
+        else:
+            subprocess.run(["afplay", f"/System/Library/Sounds/{sound}.aiff"], check=False)
     except Exception:
         pass
 

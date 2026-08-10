@@ -5,6 +5,8 @@ Reads macOS Contacts and places calls via FaceTime audio.
 import subprocess
 from typing import List, Optional
 
+from jarvis.platform import macos_only, open_url
+
 
 def _run_applescript(script: str, timeout: int = 15) -> str:
     result = subprocess.run(
@@ -35,6 +37,9 @@ def search_contacts(query: str, limit: int = 10) -> dict:
 
     Returns up to `limit` matches with name + phones + emails.
     """
+    blocked = macos_only("Contacts")
+    if blocked:
+        return {"query": query, "error": blocked}
     safe_query = query.replace('"', '\\"').replace("\\", "\\\\")
     # JXA gives us proper access to multi-value phone/email fields.
     jxa = f'''
@@ -90,6 +95,9 @@ def call_contact(contact: str, mode: str = "audio") -> dict:
     if mode not in ("audio", "video"):
         return {"contact": contact, "status": "failed", "error": "mode must be 'audio' or 'video'"}
 
+    blocked = macos_only("FaceTime calls")
+    if blocked:
+        return {"contact": contact, "status": "failed", "error": blocked}
     # Resolve name → phone/email first so FaceTime has a reachable handle.
     handle = contact
     if not any(c.isdigit() for c in contact) and "@" not in contact:
@@ -132,6 +140,9 @@ def send_message(contact: str, message: str) -> dict:
     Look up contact by name and iMessage/SMS them.
     Falls back to treating `contact` as a raw phone/email if no match.
     """
+    blocked = macos_only("Messages")
+    if blocked:
+        return {"contact": contact, "status": "failed", "error": blocked}
     handle = contact
     if not any(c.isdigit() for c in contact) and "@" not in contact:
         lookup = search_contacts(contact, limit=1)

@@ -4,6 +4,8 @@ Draft/send email via Mail.app.
 """
 import subprocess
 
+from jarvis.platform import macos_only
+
 
 def draft_email(to: str, subject: str, body: str, send: bool = False) -> dict:
     """
@@ -21,6 +23,9 @@ def draft_email(to: str, subject: str, body: str, send: bool = False) -> dict:
         False (default) → save as draft for user to review.
         True → send immediately.
     """
+    blocked = macos_only("Mail")
+    if blocked:
+        return {"to": to, "status": "failed", "error": blocked}
     safe_to = to.replace('"', '\\"')
     safe_subj = subject.replace('"', '\\"')
     safe_body = body.replace('"', '\\"').replace("\\", "\\\\")
@@ -48,6 +53,9 @@ def draft_email(to: str, subject: str, body: str, send: bool = False) -> dict:
 
 def unread_count() -> dict:
     """Count of unread messages across all accounts."""
+    blocked = macos_only("Mail")
+    if blocked:
+        return {"error": blocked}
     script = '''
     tell application "Mail"
       set total to 0

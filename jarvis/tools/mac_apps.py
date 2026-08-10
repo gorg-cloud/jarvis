@@ -4,8 +4,13 @@ Tools for interacting with specific macOS apps (Messages, Music).
 """
 import subprocess
 
+from jarvis.platform import macos_only
+
 def send_message(contact: str, message: str) -> dict:
     """Sends an iMessage/SMS using AppleScript."""
+    blocked = macos_only("Messages")
+    if blocked:
+        return {"contact": contact, "status": "failed", "error": blocked}
     script = f'''
     tell application "Messages"
         set targetService to 1st service whose service type is iMessage
@@ -21,6 +26,9 @@ def send_message(contact: str, message: str) -> dict:
 
 def control_music(action: str) -> dict:
     """Controls Apple Music. Actions: 'play', 'pause', 'next track', 'previous track'."""
+    blocked = macos_only("Apple Music control")
+    if blocked:
+        return {"action": action, "status": "failed", "error": blocked}
     valid_actions = ["play", "pause", "next track", "previous track", "next", "previous"]
     
     if action == "next":

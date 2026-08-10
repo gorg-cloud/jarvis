@@ -5,7 +5,8 @@ Creates reminders in the native macOS Reminders app via AppleScript.
 import subprocess
 from datetime import datetime
 from typing import Optional
-from typing import Optional
+
+from jarvis.platform import macos_only
 
 
 def _run_applescript(script: str) -> str:
@@ -37,6 +38,9 @@ def create_reminder(title: str, due: Optional[str] = None) -> dict:
     dict
         Confirmation with the title and due date.
     """
+    blocked = macos_only("Reminders")
+    if blocked:
+        return {"title": title, "error": blocked}
     # Escape double quotes for AppleScript string literals
     safe_title = title.replace('"', '\\"')
 

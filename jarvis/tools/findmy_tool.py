@@ -4,6 +4,8 @@ Find My device lookup via a Shortcut (must be set up once).
 """
 import subprocess
 
+from jarvis.platform import macos_only
+
 
 def find_device(device: str) -> dict:
     """
@@ -16,6 +18,9 @@ def find_device(device: str) -> dict:
     3. Set the device name from the shortcut input
     4. Name the shortcut 'Find My Device'
     """
+    blocked = macos_only("Find My")
+    if blocked:
+        return {"device": device, "error": blocked}
     try:
         r = subprocess.run(
             ["shortcuts", "run", "Find My Device", "-i", device],

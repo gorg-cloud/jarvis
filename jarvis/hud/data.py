@@ -65,19 +65,13 @@ class Telemetry:
                     self.latest["battery_charging"] = bat.power_plugged
             except Exception:
                 pass
-        # Mac battery fallback via pmset
+        # Battery fallback via the cross-platform helper
         try:
-            r = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=5)
-            for line in r.stdout.splitlines():
-                if "%" in line:
-                    try:
-                        self.latest["battery_pct"] = int(line.split("%")[0].split()[-1])
-                    except Exception:
-                        pass
-                if "AC Power" in line or "charging" in line.lower():
-                    self.latest["battery_charging"] = True
-                elif "Battery Power" in line:
-                    self.latest["battery_charging"] = False
+            from jarvis.platform import battery_status
+            b = battery_status()
+            if b.get("percent") is not None and b["percent"] >= 0:
+                self.latest["battery_pct"] = b["percent"]
+                self.latest["battery_charging"] = bool(b.get("charging"))
         except Exception:
             pass
         self.latest["log"] = self.log_entries[-50:]

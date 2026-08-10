@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from ..config import OBSIDIAN_VAULT, OBSIDIAN_VAULT_PATH
+from jarvis.platform import is_windows, open_url
 
 _MAX_READ_CHARS = 50_000
 _SKIP_DIRS = {".obsidian", ".trash", ".git", "node_modules"}
@@ -31,6 +32,11 @@ _SKIP_DIRS = {".obsidian", ".trash", ".git", "node_modules"}
 # ----------------------------------------------------------------------
 
 def _registry_path() -> Path:
+    """Obsidian's vault registry. macOS: ~/Library/Application Support/obsidian.
+    Windows: %APPDATA%/obsidian/obsidian.json."""
+    if is_windows():
+        base = Path(os.environ.get("APPDATA", str(Path.home())))
+        return base / "obsidian" / "obsidian.json"
     return Path.home() / "Library" / "Application Support" / "obsidian" / "obsidian.json"
 
 
@@ -133,11 +139,11 @@ def _rel_from_abs(vault_path: Path, abs_path: Path) -> str:
 
 
 def _open_obsidian_uri(vault_name: str, action: str, params: Dict[str, str]) -> dict:
-    """Open an obsidian:// URI with the OS `open` command."""
+    """Open an obsidian:// URI (platform-aware opener)."""
     query = urllib.parse.urlencode(params)
     uri = f"obsidian://{action}?{query}"
     try:
-        subprocess.run(["open", uri], check=True, capture_output=True, timeout=10)
+        open_url(uri)
         return {"ok": True, "uri": uri}
     except Exception as exc:
         return {"ok": False, "error": f"Could not open Obsidian: {exc}", "uri": uri}

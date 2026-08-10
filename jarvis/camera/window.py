@@ -43,9 +43,11 @@ from PyQt6.QtWidgets import (
     QSlider, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from jarvis.camera.control import (
-    KEY_LEFT, KEY_Q, KEY_RIGHT, MOD_CMD, MOD_CTRL,
-    KeyboardController, MouseController,
+from jarvis.platform import (
+    KEY_LEFT, KEY_Q, KEY_RIGHT, MOD_ALT, MOD_CMD, MOD_CTRL,
+    KeyboardController, MouseController, accessibility_trusted,
+    camera_permission_granted, is_windows, open_camera_settings,
+    request_accessibility,
 )
 from jarvis.camera.gestures import GestureEngine
 from jarvis.camera.tracker import HandTracker
@@ -122,38 +124,17 @@ class _Pinch:
 
 
 class _PermissionThread(QThread):
-    """Requests macOS camera permission (shows the system prompt) on its own
-    thread so the UI never blocks. Emits granted=True when the camera is
-    available for capture."""
+    """Checks camera permission. On macOS this shows the system prompt when
+    undetermined; on Windows OpenCV's first capture triggers the OS prompt
+    itself, so we just report granted and let the capture thread run."""
 
     granted = pyqtSignal(bool)
 
     def run(self) -> None:
-        try:
-            import AVFoundation
-        except Exception:
-            # Can't introspect — let the capture thread try on its own.
+        if is_windows():
             self.granted.emit(True)
             return
-
-        status = AVFoundation.AVCaptureDevice.authorizationStatusForMediaType_("vide")
-        if status == 3:            # AVAuthorizationStatusAuthorized
-            self.granted.emit(True)
-            return
-        if status == 2:            # AVAuthorizationStatusDenied — no more prompts
-            self.granted.emit(False)
-            return
-        # Not determined yet — ask (this is what shows the system prompt).
-        result: list = []
-        done = threading.Event()
-
-        def _cb(granted: bool) -> None:
-            result.append(bool(granted))
-            done.set()
-
-        AVFoundation.AVCaptureDevice.requestAccessForMediaType_completionHandler_("vide", _cb)
-        done.wait(20)
-        self.granted.emit(bool(result and result[0]))
+        self.granted.emit(camera_permission_granted())
 
 
 class _CaptureThread(QThread):
@@ -161,6 +142,7 @@ class _CaptureThread(QThread):
 
     frame_ready = pyqtSignal(object, object, bool, str, int, float, float)  # frame, hands, pinch, status, clicks, cursor_nx, cursor_ny
     aim = pyqtSignal(float, float)      # raw fingertip position (0..1) — always, for aiming
+    grab = pyqtSignal(bool)             # two-finger peace sign held = grab a note
     failed = pyqtSignal(str)
 
     def __init__(self, parent=None) -> None:
@@ -196,11 +178,22 @@ class _CaptureThread(QThread):
     def _execute_gesture(self, action: str) -> None:
         _debug(f"gesture action: {action}")
         if action == "close_app":
-            self._kbd.combo(KEY_Q, MOD_CMD)
+            if is_windows():
+                self._kbd.combo(0x73, MOD_ALT)  # VK_F4 — Alt+F4 closes the window
+            else:
+                self._kbd.combo(KEY_Q, MOD_CMD)
         elif action == "desktop_left":
             self._kbd.combo(KEY_LEFT, MOD_CTRL)
         elif action == "desktop_right":
             self._kbd.combo(KEY_RIGHT, MOD_CTRL)
+
+    @staticmethod
+    def _two_finger(pts, hand_size: float) -> bool:
+        """Peace sign (index + middle out, ring + pinky curled) = grab to move."""
+        def d(a, b):
+            return (((pts[a][0] - pts[b][0]) ** 2
+                     + (pts[a][1] - pts[b][1]) ** 2) ** 0.5) / hand_size
+        return d(8, 0) > 0.5 and d(12, 0) > 0.5 and d(16, 0) < 0.45 and d(20, 0) < 0.45
 
     def set_paused(self, paused: bool) -> None:
         self._pause = paused
@@ -231,6 +224,9 @@ class _CaptureThread(QThread):
         if cap is None:
             tracker.close()
             self.failed.emit(
+                "Camera unavailable. Grant permission in Settings → Privacy & "
+                "security → Camera → allow JARVIS, then reopen gesture control."
+                if is_windows() else
                 "Camera unavailable. Grant permission in System Settings → "
                 "Privacy & Security → Camera → JARVIS, then reopen gesture control."
             )
@@ -344,11 +340,6 @@ class _CaptureThread(QThread):
                             # Pen down/up runs through the pinch state machine
                             # (hysteresis + hold), so the pen can't flap at the
                             # threshold — that's what made strokes cutty.
-                            dist = ((((tip[0] - thumb[0]) ** 2
-                                      + (tip[1] - thumb[1]) ** 2) ** 0.5)
-                                     / hand_size)
-                            self._pen_pinch.update(dist, cfg["pinch_press"],
-                                                   cfg["pinch_release"])
                             s = cfg["smooth"]
                             if self._smooth is None:
                                 self._smooth = (tip[0], tip[1])
@@ -365,12 +356,24 @@ class _CaptureThread(QThread):
                                 sum(p[1] for p in self._recent) / len(self._recent),
                             )
                             self.aim.emit(avg[0], avg[1])
-                            if self._pen_pinch.pinched:
-                                cursor_nx, cursor_ny = avg  # pen down
-                                status = "WRITING — PINCH HELD"
+                            # Mode 3 only: peace sign grabs a note to move it.
+                            grabbing = self._mode == 3 and self._two_finger(pts, hand_size)
+                            self.grab.emit(grabbing)
+                            if grabbing:
+                                cursor_nx, cursor_ny = -1.0, -1.0
+                                status = "GRAB — MOVE NOTE"
                             else:
-                                cursor_nx, cursor_ny = -1.0, -1.0  # pen up
-                                status = "PINCH TO WRITE · OPEN = MOVE"
+                                dist = ((((tip[0] - thumb[0]) ** 2
+                                          + (tip[1] - thumb[1]) ** 2) ** 0.5)
+                                         / hand_size)
+                                self._pen_pinch.update(dist, cfg["pinch_press"],
+                                                       cfg["pinch_release"])
+                                if self._pen_pinch.pinched:
+                                    cursor_nx, cursor_ny = avg  # pen down
+                                    status = "WRITING — PINCH HELD"
+                                else:
+                                    cursor_nx, cursor_ny = -1.0, -1.0  # pen up
+                                    status = "PINCH TO WRITE · OPEN = MOVE"
                     else:
                         status = "HAND LOST"
                 else:
@@ -685,6 +688,7 @@ class GestureWindow(QMainWindow):
         self._thread = _CaptureThread()
         self._thread.frame_ready.connect(self._on_frame)
         self._thread.aim.connect(self._on_aim)
+        self._thread.grab.connect(self._on_grab)
         self._thread.failed.connect(self._on_failed)
 
         self._perm = _PermissionThread()
@@ -692,6 +696,7 @@ class GestureWindow(QMainWindow):
         self._opened_settings = False
         self._latest_frame = None      # latest camera frame (for 🎥 SNAP)
         self._suggesting = False       # SUGGEST reply gets pinned to the canvas
+        self._grabbing = False         # two-finger grab is dragging a note
         self._voice_thread: _VoiceThread | None = None
 
         self._build_ui()
@@ -814,6 +819,7 @@ class GestureWindow(QMainWindow):
         self._rail.zoom_out_requested.connect(lambda: self._project_canvas.zoom_at(0.8))
         self._rail.zoom_reset_requested.connect(self._project_canvas.zoom_reset)
         self._rail.cam_toggled.connect(self._camera_pip.setVisible)
+        self._rail.text_requested.connect(self._project_canvas.begin_edit_at_center)
         pside.addWidget(self._rail, stretch=1)
         pp.addLayout(pside)
 
@@ -1013,32 +1019,12 @@ class GestureWindow(QMainWindow):
             self._request_accessibility()
 
     def _accessibility_trusted(self) -> bool:
-        """True when this app may post real click events (Accessibility).
-        Movement no longer needs this (warp), but clicks do."""
-        try:
-            from ApplicationServices import AXIsProcessTrusted
-            return bool(AXIsProcessTrusted())
-        except Exception:
-            pass
-        try:
-            import Quartz
-            return bool(Quartz.CGPreflightPostEventAccess())
-        except Exception:
-            return True  # can't introspect — assume OK
+        """True when this app may post real click events."""
+        return accessibility_trusted()
 
     def _request_accessibility(self) -> None:
-        """Show the system Accessibility prompt (registers this app identity so
-        it appears in the list — verified it never appears otherwise)."""
-        try:
-            import ApplicationServices
-            from ApplicationServices import AXIsProcessTrustedWithOptions
-            AXIsProcessTrustedWithOptions({ApplicationServices.kAXTrustedCheckOptionPrompt: True})
-        except Exception:
-            try:
-                from ApplicationServices import AXIsProcessTrustedWithOptions
-                AXIsProcessTrustedWithOptions({"AXTrustedCheckOptionPrompt": True})
-            except Exception:
-                pass
+        """Prompt the OS to register this app for input-event permission."""
+        request_accessibility()
 
     def _recheck_accessibility(self) -> None:
         trusted = self._accessibility_trusted()
@@ -1063,7 +1049,11 @@ class GestureWindow(QMainWindow):
                 self._open_accessibility_settings()
 
     def _open_accessibility_settings(self) -> None:
-        subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
+        from jarvis.platform import open_url
+        if is_windows():
+            open_url("ms-settings:easeofaccess-narrator")
+        else:
+            open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
 
     # ---------------------------------------------------------------- modes
 
@@ -1356,6 +1346,27 @@ class GestureWindow(QMainWindow):
         """Live fingertip reticle on the project canvas (aim before you pinch)."""
         if self._mode == 3:
             self._project_canvas.set_cursor(nx, ny)
+            if self._grabbing:
+                c = self._project_canvas
+                c.update_drag(nx * c.width(), ny * c.height())
+
+    def _on_grab(self, grabbing: bool) -> None:
+        """Two-finger peace sign grabs the note under the reticle; moving the
+        hand drags it; releasing drops it."""
+        if self._mode != 3:
+            return
+        if grabbing:
+            c = self._project_canvas
+            if c._cursor is not None and c._drag_item is None:
+                sx = c._cursor[0] * c.width()
+                sy = c._cursor[1] * c.height()
+                item = c._hit_test(sx, sy)
+                if item is not None:
+                    c.start_drag(item, sx, sy)
+                    self._grabbing = True
+        elif self._grabbing:
+            self._project_canvas.end_drag()
+            self._grabbing = False
 
     def _on_mouse_stroke_end(self) -> None:
         """After a mouse-drawn stroke, kick the same auto-OCR timer the hand
@@ -1469,10 +1480,16 @@ class GestureWindow(QMainWindow):
         _debug(f"camera permission result: granted={granted}")
         if not granted:
             self._status.setText("⚠ CAMERA DENIED")
-            self._video.show_message(
-                "Camera permission denied. Enable it in System Settings → "
-                "Privacy & Security → Camera → JARVIS, then reopen gesture control."
-            )
+            if is_windows():
+                self._video.show_message(
+                    "Camera permission denied. Enable it in Settings → Privacy & "
+                    "security → Camera → allow JARVIS, then reopen gesture control."
+                )
+            else:
+                self._video.show_message(
+                    "Camera permission denied. Enable it in System Settings → "
+                    "Privacy & Security → Camera → JARVIS, then reopen gesture control."
+                )
             return
         self._status.setText("STARTING…")
         _debug("permission granted, starting capture thread")

@@ -5,6 +5,7 @@ Triggers macOS/iOS alarms via the Shortcuts CLI or AppleScript fallback.
 import subprocess
 from datetime import datetime
 from ..config import USE_SHORTCUT, ALARM_SHORTCUT_NAME
+from jarvis.platform import macos_only
 
 
 def create_alarm(time_str: str) -> dict:
@@ -21,6 +22,9 @@ def create_alarm(time_str: str) -> dict:
     dict
         Confirmation with the scheduled time.
     """
+    blocked = macos_only("Alarms")
+    if blocked:
+        return {"alarm_time": time_str, "error": blocked}
     if USE_SHORTCUT:
         # Invoke the user's pre-built Shortcut named "CreateAlarm"
         subprocess.run(

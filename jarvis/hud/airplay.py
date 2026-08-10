@@ -124,6 +124,10 @@ def _run_osascript(script: str, timeout: float = 8.0) -> tuple[int, str, str]:
 
 def start_airplay(receiver: str, timeout: float = 8.0) -> dict:
     """Start mirroring the primary display to the named AirPlay receiver."""
+    from jarvis.platform import macos_only
+    blocked = macos_only("AirPlay")
+    if blocked:
+        return {"ok": False, "error": blocked}
     if not receiver:
         return {"ok": False, "error": "no receiver name given"}
     # Escape double quotes for AppleScript string literal
@@ -148,6 +152,9 @@ def start_airplay(receiver: str, timeout: float = 8.0) -> dict:
 
 def list_receivers(timeout: float = 6.0) -> List[str]:
     """Return visible AirPlay receiver names from the Screen Mirroring menu."""
+    from jarvis.platform import macos_only
+    if macos_only("AirPlay"):
+        return []
     rc, out, err = _run_osascript(_LIST_SCRIPT, timeout=timeout)
     if rc != 0 or not out:
         return []
@@ -156,6 +163,10 @@ def list_receivers(timeout: float = 6.0) -> List[str]:
 
 def stop_airplay(timeout: float = 6.0) -> dict:
     """Turn off any active AirPlay mirroring session."""
+    from jarvis.platform import macos_only
+    blocked = macos_only("AirPlay")
+    if blocked:
+        return {"ok": False, "error": blocked}
     rc, out, err = _run_osascript(_STOP_SCRIPT, timeout=timeout)
     if "STOPPED" in out:
         return {"ok": True, "error": None, "status": "stopped"}
@@ -233,6 +244,10 @@ def set_extend_mode(receiver: str, timeout: float = 15.0) -> dict:
     Force an AirPlay receiver into Extend mode (separate display, not mirror).
     Opens System Settings → Displays and selects 'Use as: Separate Display'.
     """
+    from jarvis.platform import macos_only
+    blocked = macos_only("AirPlay")
+    if blocked:
+        return {"ok": False, "error": blocked}
     if not receiver:
         return {"ok": False, "error": "no receiver name given"}
     safe = receiver.replace("\\", "\\\\").replace('"', '\\"')

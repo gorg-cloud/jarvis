@@ -170,6 +170,11 @@ class DisplayWatcher:
 
 
 def main():
+    from jarvis.platform import macos_only
+    blocked = macos_only("The JARVIS HUD")
+    if blocked:
+        print(blocked)
+        return
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument("--interval", type=float, default=3.0)

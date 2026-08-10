@@ -4,6 +4,8 @@ macOS Calendar.app via AppleScript — read events.
 """
 import subprocess
 
+from jarvis.platform import macos_only
+
 
 def _run(script: str, timeout: int = 15) -> str:
     r = subprocess.run(
@@ -17,6 +19,9 @@ def _run(script: str, timeout: int = 15) -> str:
 
 def next_events(limit: int = 5) -> dict:
     """Return up to `limit` upcoming events across all calendars."""
+    blocked = macos_only("Calendar access")
+    if blocked:
+        return {"error": blocked}
     # Pull today + tomorrow events, sort in script
     script = f'''
     set output to ""
@@ -79,6 +84,9 @@ def next_events(limit: int = 5) -> dict:
 
 def free_at(time_str: str) -> dict:
     """Check if calendar is free at a given time. time_str: '2026-07-20 15:00'."""
+    blocked = macos_only("Calendar access")
+    if blocked:
+        return {"time": time_str, "error": blocked}
     from datetime import datetime
     try:
         dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M")
@@ -114,6 +122,9 @@ def free_at(time_str: str) -> dict:
 
 def week_events(days: int = 7) -> dict:
     """Return all events for the next N days."""
+    blocked = macos_only("Calendar access")
+    if blocked:
+        return {"error": blocked}
     from datetime import datetime, timedelta
     today = datetime.now()
     end = today + timedelta(days=days)

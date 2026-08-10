@@ -16,16 +16,25 @@ import os
 import threading
 import time
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PyQt6.QtWidgets import (
-    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QTextEdit, QVBoxLayout, QWidget,
+    QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QTextEdit, QVBoxLayout, QWidget,
 )
 
 from jarvis.hud.theme import CYAN, WHITE_DIM, mono
 
 _WHITE = QColor("#ffffff")
 _WHITE_DIM = QColor(255, 255, 255, 90)
+
+# (key, font family, bold) — selectable note fonts.
+FONTS = [
+    ("MARKER", "Marker Felt", True),
+    ("MONO", "SF Mono, Menlo", True),
+    ("SANS", "Helvetica Neue", False),
+    ("SERIF", "Georgia", False),
+]
 
 HAND_CONNECTIONS = [
     (0, 1), (1, 2), (2, 3), (3, 4),
@@ -126,6 +135,37 @@ class ProjectCanvas(QWidget):
         self._zoom = 1.0                    # 0.3 .. 4.0
         self._pan = (0.5, 0.5)              # world point at view center
 
+        # Inline text editor (double-click the canvas to add/edit a note).
+        self._editor = QTextEdit(self)
+        self._editor.setStyleSheet(
+            "QTextEdit { background: #0a0a0e; color: #ffffff;"
+            " border: 1px solid rgba(0, 240, 255, 0.85); border-radius: 6px;"
+            " font-family: 'Marker Felt'; font-size: 18px; padding: 4px; }"
+        )
+        self._editor.hide()
+        self._editor.installEventFilter(self)
+        self._editing_item = None           # existing item being edited, or None = new note
+        self._editing_anchor = (0.0, 0.0)   # world coords of the editor's top-left
+        self._pending_font = "MARKER"
+
+        # Font picker shown above the editor.
+        self._font_combo = QComboBox(self)
+        for name, _fam, _bold in FONTS:
+            self._font_combo.addItem(name)
+        self._font_combo.setStyleSheet(
+            "QComboBox { background: #0a0a0e; color: #ffffff;"
+            " border: 1px solid rgba(0, 240, 255, 0.7); border-radius: 4px;"
+            " padding: 2px 6px; font-family: 'SF Mono', Menlo, monospace; font-size: 10px; }"
+            "QComboBox QAbstractItemView { background: #0a0a0e; color: #ffffff;"
+            " selection-background-color: #0e3a42; }"
+        )
+        self._font_combo.hide()
+        self._font_combo.currentIndexChanged.connect(self._on_font_changed)
+
+        # Drag-to-move a note (mouse or two-finger grab).
+        self._drag_item = None
+        self._drag_off = (0.0, 0.0)
+
     # ------------------------------------------------------------------ API
 
     # ---- view (zoom / pan) ------------------------------------------------
@@ -144,11 +184,13 @@ class ProjectCanvas(QWidget):
         wy = (cy - 0.5) / self._zoom + self._pan[1]
         self._zoom = new_zoom
         self._pan = (wx - (cx - 0.5) / new_zoom, wy - (cy - 0.5) / new_zoom)
+        self._sync_editor_pos()
         self.update()
 
     def zoom_reset(self) -> None:
         self._zoom = 1.0
         self._pan = (0.5, 0.5)
+        self._sync_editor_pos()
         self.update()
 
     def _edge_pan(self, nx: float, ny: float) -> None:
@@ -169,6 +211,7 @@ class ProjectCanvas(QWidget):
             return
         self._pan = (self._pan[0] + dx / self._zoom,
                      self._pan[1] + dy / self._zoom)
+        self._sync_editor_pos()
         self.update()
 
     def _to_world(self, nx: float, ny: float) -> tuple:
@@ -189,21 +232,206 @@ class ProjectCanvas(QWidget):
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._editor.isVisible():
+                # a click on the canvas commits the note being edited
+                self._commit_edit()
+                return
+            sx, sy = event.position().x(), event.position().y()
+            item = self._hit_test(sx, sy)
+            if item is not None:
+                # grab a note to move it (double-click still edits)
+                self.start_drag(item, sx, sy)
+                return
             self._mouse_drawing = True
-            self.begin(event.position().x() / max(1, self.width()),
-                       event.position().y() / max(1, self.height()))
+            self.begin(sx / max(1, self.width()), sy / max(1, self.height()))
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag_item is not None:
+            self.update_drag(event.position().x(), event.position().y())
+            return
         if self._mouse_drawing:
             self.add(event.position().x() / max(1, self.width()),
                      event.position().y() / max(1, self.height()))
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._drag_item is not None:
+            self.end_drag()
+            return
         if self._mouse_drawing:
             self._mouse_drawing = False
             self.end()
             if self.has_strokes():
                 self.drawing_ended.emit()
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        # drop the accidental dot stroke the first click started
+        if self._strokes and len(self._strokes[-1][2]) < 3:
+            self._strokes.pop()
+        sx, sy = event.position().x(), event.position().y()
+        self._begin_edit(sx, sy, self._hit_test(sx, sy))
+
+    # ---- inline text editing ----------------------------------------------
+
+    def _screen_to_world(self, sx: float, sy: float) -> tuple:
+        return ((sx / max(1, self.width()) - 0.5) / self._zoom + self._pan[0],
+                (sy / max(1, self.height()) - 0.5) / self._zoom + self._pan[1])
+
+    def _item_rect_screen(self, it):
+        """Screen-space rect (x, y, w, h) for a text item, for hit-testing and
+        positioning the editor. None for non-text items."""
+        if it["type"] != "text":
+            return None
+        w, h = max(1, self.width()), max(1, self.height())
+        z, px, py = self._zoom, self._pan[0], self._pan[1]
+        base = 22.0 * z * (w / 800.0)
+        fam, bold = self._font_family(it.get("font", "MARKER"))
+        font = QFont(fam, int(max(6, base)))
+        font.setBold(bold)
+        max_w = int(w * 0.26)
+        lines = self._wrap(it["text"], font, max_w)
+        x = (it["x"] - px) * z * w + w / 2
+        y = (it["y"] - py) * z * h + h / 2
+        return (x, y, max_w, len(lines) * QFontMetrics(font).height())
+
+    def _hit_test(self, sx: float, sy: float):
+        for it in reversed(self._items):
+            r = self._item_rect_screen(it)
+            if r and r[0] <= sx <= r[0] + r[2] and r[1] <= sy <= r[1] + r[3]:
+                return it
+        return None
+
+    # ---- drag to move a note (mouse or two-finger grab) --------------------
+
+    def start_drag(self, item, sx: float, sy: float) -> None:
+        r = self._item_rect_screen(item)
+        self._drag_item = item
+        self._drag_off = (sx - r[0], sy - r[1]) if r else (0.0, 0.0)
+
+    def update_drag(self, sx: float, sy: float) -> None:
+        if self._drag_item is None:
+            return
+        wx, wy = self._screen_to_world(sx - self._drag_off[0], sy - self._drag_off[1])
+        self._drag_item["x"] = wx
+        self._drag_item["y"] = wy
+        self.update()
+
+    def end_drag(self) -> None:
+        self._drag_item = None
+
+    # ---- note fonts ---------------------------------------------------------
+
+    @staticmethod
+    def _font_family(name: str):
+        for key, fam, bold in FONTS:
+            if key == name:
+                return fam, bold
+        return FONTS[0][1], FONTS[0][2]
+
+    def _on_font_changed(self, idx: int) -> None:
+        if not (0 <= idx < len(FONTS)):
+            return
+        name = FONTS[idx][0]
+        if self._editing_item is not None:
+            self._editing_item["font"] = name
+        else:
+            self._pending_font = name
+        self._sync_editor_pos()
+        self.update()
+
+    def begin_edit_at_center(self) -> None:
+        """Open a fresh text box at the view center (TEXT button / voice)."""
+        self._begin_edit(self.width() / 2, self.height() / 2, None)
+
+    def _begin_edit(self, sx: float, sy: float, item=None) -> None:
+        self._editing_item = item
+        if item is None:
+            self._editing_anchor = self._screen_to_world(sx, sy)
+            self._editor.setPlainText("")
+            self._editor.setGeometry(int(sx), int(sy),
+                                     max(120, int(self.width() * 0.26)),
+                                     max(60, int(self.height() * 0.22)))
+        else:
+            x, y, iw, ih = self._item_rect_screen(item)
+            self._editing_anchor = self._screen_to_world(x, y)
+            self._editor.setPlainText(item["text"])
+            self._editor.setGeometry(int(x), int(y), int(iw), max(60, int(ih) + 10))
+        # match the font picker to this note (or the pending font for new notes)
+        font = item.get("font") if item is not None else self._pending_font
+        idx = next((i for i, f in enumerate(FONTS) if f[0] == font), 0)
+        self._font_combo.blockSignals(True)
+        self._font_combo.setCurrentIndex(idx)
+        self._font_combo.blockSignals(False)
+        self._editor.show()
+        self._font_combo.show()
+        self._sync_editor_pos()
+        self._editor.setFocus()
+        self._editor.selectAll()
+
+    def _commit_edit(self) -> None:
+        if not self._editor.isVisible():
+            return
+        text = self._editor.toPlainText().strip()
+        if self._editing_item is not None:
+            if text:
+                self._editing_item["text"] = text
+            elif self._editing_item in self._items:
+                self._items.remove(self._editing_item)
+        elif text:
+            self._items.append({"type": "text", "x": self._editing_anchor[0],
+                                "y": self._editing_anchor[1], "text": text,
+                                "font": self._pending_font})
+        self._editing_item = None
+        self._pending_font = "MARKER"
+        self._editor.hide()
+        self._font_combo.hide()
+        self.update()
+
+    def _cancel_edit(self) -> None:
+        self._editing_item = None
+        self._editor.hide()
+        self._font_combo.hide()
+        self.update()
+
+    def _sync_editor_pos(self) -> None:
+        """Keep the editor (and its font picker) glued to the item/anchor when
+        the view zooms or pans."""
+        if not self._editor.isVisible():
+            return
+        if self._editing_item is not None:
+            r = self._item_rect_screen(self._editing_item)
+            if r:
+                self._editor.setGeometry(int(r[0]), int(r[1]), int(r[2]), max(60, int(r[3]) + 10))
+        else:
+            w, h = max(1, self.width()), max(1, self.height())
+            sx = (self._editing_anchor[0] - self._pan[0]) * self._zoom * w + w / 2
+            sy = (self._editing_anchor[1] - self._pan[1]) * self._zoom * h + h / 2
+            self._editor.move(int(sx), int(sy))
+        self._font_combo.move(self._editor.x(), max(0, self._editor.y() - self._font_combo.height() - 2))
+        self._font_combo.resize(96, self._font_combo.height())
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._sync_editor_pos()
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if obj is self._editor:
+            t = event.type()
+            if t == QEvent.Type.KeyPress:
+                if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+                        self._commit_edit()
+                        return True
+                elif event.key() == Qt.Key.Key_Escape:
+                    self._cancel_edit()
+                    return True
+            elif t == QEvent.Type.FocusOut:
+                from PyQt6.QtWidgets import QApplication
+                # Don't commit when focus moves to the font picker.
+                if QApplication.focusWidget() is not self._font_combo:
+                    self._commit_edit()
+        return super().eventFilter(obj, event)
 
     # ---- strokes -----------------------------------------------------------
 
@@ -390,10 +618,13 @@ class ProjectCanvas(QWidget):
             x = (it["x"] - px) * z * w + w / 2
             y = (it["y"] - py) * z * h + h / 2
             if it["type"] == "text":
+                fam, bold = self._font_family(it.get("font", "MARKER"))
+                tfont = QFont(fam, int(max(6, base)))
+                tfont.setBold(bold)
+                fm = QFontMetrics(tfont)
                 max_w = int(w * 0.26)
-                fm = QFontMetrics(font)
-                lines = self._wrap(it["text"], font, max_w)
-                p.setFont(font)
+                lines = self._wrap(it["text"], tfont, max_w)
+                p.setFont(tfont)
                 line_h = fm.height()
                 for i, line in enumerate(lines):
                     p.setPen(_WHITE)
@@ -643,6 +874,7 @@ class ProjectRail(QWidget):
     zoom_out_requested = pyqtSignal()
     zoom_reset_requested = pyqtSignal()
     cam_toggled = pyqtSignal(bool)
+    text_requested = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -766,6 +998,17 @@ class ProjectRail(QWidget):
         )
         cam_btn.toggled.connect(self.cam_toggled.emit)
         grid.addWidget(cam_btn, 2, 0)
+        txt_btn = QPushButton("✎ TEXT")
+        txt_btn.setFont(mono(8, bold=True))
+        txt_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        txt_btn.setToolTip("Add a text note at the center (or double-click the canvas)")
+        txt_btn.setStyleSheet(
+            "QPushButton { background: #0a0a0e; color: #9fd8e0;"
+            " border: 1px solid rgba(0, 240, 255, 0.4); border-radius: 5px; padding: 5px 4px; }"
+            "QPushButton:hover { background: #0e1a20; }"
+        )
+        txt_btn.clicked.connect(lambda: self.text_requested.emit())
+        grid.addWidget(txt_btn, 2, 1)
         lay.addLayout(grid)
 
         self._busy = False

@@ -484,7 +484,8 @@ class ChatWindow(QMainWindow):
         v.addWidget(top)
 
         def _open_config_dir() -> None:
-            subprocess.Popen(["open", os.path.expanduser("~/.jarvis")])
+            from jarvis.platform import open_path
+            open_path(os.path.expanduser("~/.jarvis"))
 
         btn_cfg = QPushButton("Open config folder")
         btn_cfg.setFont(mono(10))

@@ -1,8 +1,8 @@
-# 🦾 JARVIS — A macOS AI Butler
+# 🦾 JARVIS — An AI Butler for macOS & Windows
 
 > *"At your service, sir."*
 
-JARVIS is a personal AI assistant for macOS that talks, listens, watches, remembers, and runs your machine — a Stark-Industries-style desktop companion built as a native Mac app (PyQt6 + PyInstaller).
+JARVIS is a personal AI assistant that talks, listens, watches, remembers, and runs your machine — a Stark-Industries-style desktop companion. It runs natively on **macOS and Windows** (PyQt6 + PyInstaller), sharing one codebase behind a platform layer that abstracts mouse/keyboard control, notifications, screenshots, and system commands.
 
 ---
 
@@ -29,7 +29,7 @@ The camera is the Iron Man part — your hands are the interface:
 |------|-----------------|
 | **1 · CURSOR** | Your index finger moves the mouse; **pinch = click**, thumb+middle = right-click. Hand-size-normalized pinch with hold-to-confirm so it's precise at any distance. **Peace sign held 3s = close app**, **fist swipe = switch desktops** |
 | **2 · WHITEBOARD** | **Pinch to write** — draw on a canvas with your finger, pick marker color (`1`–`6` keys) and size, and JARVIS **auto-converts your handwriting to text** (Apple Vision OCR) in a whiteboard font. 💾 Save to Obsidian |
-| **3 · PROJECT** | *(in progress)* The animated holo-canvas — a synthwave grid workspace with the JARVIS rail on the side and a Spotify chip. See below |
+| **3 · PROJECT** | A fullscreen black & white canvas with a small JARVIS panel — hand-draw strokes (or use the mouse), double-click to add/edit text, drag notes, change fonts, zoom & pan forever (edge-scroll), pin screenshots/camera/⌘V/internet images, and JARVIS lays out plans, schedules (Excel-style), and flowcharts right on the board. Save everything to Obsidian |
 
 Both camera modes have a live settings panel (speed, smoothing, pinch sensitivity) and an anti-shake pipeline (moving-average smoothing + dead zone).
 
@@ -64,30 +64,51 @@ cp .env.example .env      # add your OpenRouter key(s) at minimum
 ./jarvis/run_app.sh       # or: python -m jarvis.main
 ```
 
-Requires macOS. Ollama (for the local fallback) at [ollama.com](https://ollama.com). Piper voices (optional, for the neural voice) go in `~/.jarvis/piper/`.
+## 🖥 Platforms
 
-## 🔨 Building the .app
+| | macOS | Windows |
+|---|---|---|
+| Chat window, tray menu, voice (STT/TTS) | ✅ | ✅ |
+| Camera gesture modes (cursor, whiteboard, project) | ✅ | ✅ (SendInput cursor/click; no Accessibility needed) |
+| Obsidian vault integration | ✅ | ✅ (finds the vault via `%APPDATA%`) |
+| Spotify now-playing (AppleScript) | ✅ | ➖ (shows offline) |
+| Calendar / Reminders / Mail / Contacts / Messages / Find My | ✅ | ➖ (AppleScript-bound; tools answer "macOS only") |
+| HUD (second display / AirPlay) | ✅ | ➖ |
 
+Ollama (for the local LLM fallback) at [ollama.com](https://ollama.com). Piper voices (optional, for the neural voice) go in `~/.jarvis/piper/`.
+
+## 🔨 Building
+
+**macOS (.app):**
 ```bash
 # From the repo root:
 .venv/bin/python -m PyInstaller --noconfirm jarvis/jarvis-app.spec
 # Result: dist/JARVIS.app — drag to /Applications
 ```
+`build_app.sh` wraps this with codesigning using your stable identity.
 
-`build_app.sh` wraps this with codesigning using your identity.
+**Windows (.exe):**
+```powershell
+# From the repo root (PowerShell):
+powershell -ExecutionPolicy Bypass -File scripts/build_windows.ps1
+# Result: dist\JARVIS\JARVIS.exe
+```
+Or build in CI — the GitHub Actions workflow (`build.yml`) builds the Windows exe on every push and uploads it as an artifact.
 
 ## 📂 Layout
 
 ```
 jarvis/
 ├── app/          # chat window, tray menu, worker, status/recents/prefs
-├── camera/       # hand tracking, gesture engine, cursor & whiteboard modes
+├── camera/       # hand tracking, gesture engine, cursor/whiteboard/project modes
 ├── engine/       # speaker (TTS), STT, keyring (API failover), Ollama provider
 ├── tools/        # 30+ tools: obsidian, spotify, calendar, shell, vision, …
 ├── hud/          # heads-up display
+├── platform.py   # cross-platform layer: mouse/kbd, notify, screenshot, open
 ├── main.py       # entry point
 ├── config.py     # all configuration
-└── jarvis-app.spec
+├── jarvis-app.spec       # macOS PyInstaller spec
+└── jarvis-app-win.spec   # Windows PyInstaller spec
 ```
 
 ## ⚙️ Configuration
@@ -96,9 +117,9 @@ See [`.env.example`](.env.example) for every knob: provider keys, voice engine, 
 
 ## 🗺 Roadmap
 
-- **MODE 3 · PROJECT** — the holo-canvas: an animated synthwave grid workspace you control with your hands. Say *"JARVIS, start a new project"* and a canvas opens with JARVIS on the side (voice + text), a Spotify chip, and hand-drawn notes that OCR into project notes in Obsidian
 - Air gestures → command dispatch (draw a circle = open menu)
 - Presenter mode (hand as laser pointer)
+- Windows: native toast notifications via WinRT, Spotify API support
 
 ## 📜 License
 

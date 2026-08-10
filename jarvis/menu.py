@@ -29,8 +29,9 @@ def _debug(msg: str) -> None:
 
 
 def _beep() -> None:
+    from PyQt6.QtWidgets import QApplication
     try:
-        subprocess.run(["afplay", "/System/Library/Sounds/Tink.aiff"], check=False)
+        QApplication.beep()
     except Exception:
         pass
 
@@ -249,6 +250,10 @@ end tell
 
 
 def spotify_status() -> dict:
+    """Now-playing info. macOS: AppleScript. Windows: none (no API key) → off."""
+    from jarvis.platform import macos_only
+    if macos_only("Spotify status"):
+        return {"state": "off"}
     try:
         r = subprocess.run(["osascript", "-e", _SPOTIFY_SCRIPT],
                            capture_output=True, text=True, timeout=5)
@@ -267,10 +272,10 @@ def spotify_status() -> dict:
 
 def battery_percent() -> str:
     try:
-        r = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=5)
-        for line in r.stdout.splitlines():
-            if "InternalBattery" in line and "%" in line:
-                return line.split("%")[0].rsplit(" ", 1)[-1] + "%"
+        from jarvis.platform import battery_status
+        b = battery_status()
+        if b.get("percent") is not None and b["percent"] >= 0:
+            return f"{b['percent']}%"
     except Exception:
         pass
     return "--"

@@ -14,6 +14,8 @@ import subprocess
 import threading
 import time
 
+from jarvis.platform import is_windows, launch_app, notify
+
 DEFAULT_BLOCK = [
     "Safari", "Google Chrome", "Messages", "Slack", "Discord",
     "Instagram", "TikTok", "Netflix",
@@ -30,14 +32,20 @@ _state = {
 
 def _notify(title: str, message: str) -> None:
     try:
-        script = f'display notification "{message}" with title "{title}"'
-        subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
+        notify(title, message)
     except Exception:
         pass
 
 
 def _quit_app(app: str) -> None:
     """Quit an app by name (no-op if it isn't running)."""
+    if is_windows():
+        try:
+            subprocess.run(["taskkill", "/IM", f"{app}.exe", "/F"],
+                           capture_output=True, timeout=6)
+        except Exception:
+            pass
+        return
     try:
         script = f'tell application "{app}" to quit'
         subprocess.run(["osascript", "-e", script], capture_output=True, timeout=6)
@@ -47,7 +55,7 @@ def _quit_app(app: str) -> None:
 
 def _open_app(app: str) -> None:
     try:
-        subprocess.run(["open", "-a", app], capture_output=True, timeout=6)
+        launch_app(app)
     except Exception:
         pass
 

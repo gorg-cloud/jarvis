@@ -17,12 +17,14 @@ def _sh(cmd, timeout: float = 5.0) -> str:
 
 def battery_percent() -> str:
     """'87%' or '87% ⚡' (charging) or '—' if unknown."""
-    out = _sh(["pmset", "-g", "batt"])
-    for line in out.splitlines():
-        if "%" in line and "InternalBattery" in line:
-            pct = line.split("%")[0].split()[-1]
-            charging = "AC Power" in line or "charged" in line.lower()
-            return f"{pct}%{' ⚡' if charging else ''}"
+    try:
+        from jarvis.platform import battery_status
+        b = battery_status()
+        if b.get("percent") is not None and b["percent"] >= 0:
+            charging = b.get("charging")
+            return f"{b['percent']}%{' ⚡' if charging else ''}"
+    except Exception:
+        pass
     return "—"
 
 
