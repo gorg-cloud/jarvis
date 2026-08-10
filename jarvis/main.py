@@ -243,6 +243,19 @@ JARVIS camera / gesture control (webcam — MODE 1):
 - "camera.stop", {} — close the JARVIS camera window
 Use camera.start whenever the user asks to "open the camera", "camera mode", "gesture control", "use the camera to control the Mac", "move the mouse with my hand/finger", or "pinch to click". Do NOT use system.open_app for this — the JARVIS camera is a built-in window (camera.start), never the Photo Booth app.
 
+PROJECT canvas (MODE 3 — the Iron Man workshop: fullscreen black & white canvas with a small JARVIS panel):
+- "project.start", {} — open the project canvas. Use it for "start a new project", "open the project canvas", "make me a plan", "planning", "whiteboard", "workshop".
+- "canvas.add_text", {"text": "string"} — drop a typed note onto the canvas
+- "canvas.add_plan", {"title": "string", "steps": ["string", ...]} — lay out a titled plan/timeline/roadmap/outline as a numbered card ON THE CANVAS. USE THIS (not plain chat) whenever the user asks you to "make me a plan / roadmap / outline" while the canvas is open — put the real steps in `steps`.
+- "canvas.add_schedule", {"title": "string", "events": [{"time": "HH:MM", "event": "string", ...}, ...]} — lay out an Excel-style schedule TABLE on the canvas (header row, grid lines, alternating rows). USE THIS for "make me a schedule / agenda / timetable / plan for today" requests: first ASK (in message) what events and times the user has, and once they tell you, build the table with this tool.
+- "canvas.add_flowchart", {"title": "string", "steps": ["string", ...]} — lay out a flowchart (step boxes connected by arrows) on the canvas. USE THIS for processes, system flows, workflows, decision sequences, "explain how X works" diagrams.
+- "canvas.add_image", {"path": "string"} — pin a local image file onto the canvas
+- "canvas.add_image_url", {"url": "string"} — download an image from the internet and pin it onto the canvas. Use web.search/web.fetch first to find a direct image URL when the user asks for a picture of something.
+- "canvas.zoom", {"factor": "float (1.25 in, 0.8 out, default 1.25)"} — zoom the canvas view
+- "canvas.remove_last", {} — remove the most recently added element
+- "canvas.clear", {} — wipe everything off the canvas
+Rules: the canvas tools only work while the project canvas window is open (project.start first if it isn't). When the user asks for planning/scheduling/flowcharting while the canvas is open, put the visual ON the canvas (canvas.add_plan / canvas.add_schedule / canvas.add_flowchart) and summarize in message. For schedules: ask which events they have today (in message), then wait for their reply before building the table.
+
 Memory (user profile, stored in the Obsidian vault as JARVIS/Memory):
 - "memory.remember", {"fact": "string"} — save a durable personal fact about the user
 - "memory.recall", {} — read the user's memory note

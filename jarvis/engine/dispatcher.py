@@ -42,7 +42,17 @@ from ..tools.focus_tool import start_focus, stop_focus, focus_status
 from ..tools.shell_tool import run_shell, write_file as shell_write_file, read_file as shell_read_file
 from ..tools.briefing_tool import get_briefing
 from ..tools.gestures_tool import start_gestures, stop_gestures, start_project, stop_project
-from ..camera.canvas_api import add_text as canvas_add_text, add_image as canvas_add_image, remove_last as canvas_remove_last, clear_canvas as canvas_clear
+from ..camera.canvas_api import (
+    add_text as canvas_add_text,
+    add_image as canvas_add_image,
+    add_image_url as canvas_add_image_url,
+    add_plan as canvas_add_plan,
+    add_schedule as canvas_add_schedule,
+    add_flowchart as canvas_add_flowchart,
+    zoom as canvas_zoom,
+    remove_last as canvas_remove_last,
+    clear_canvas as canvas_clear,
+)
 from ..tools.obsidian_tool import (
     list_vaults as obsidian_list_vaults,
     create_note as obsidian_create_note,
@@ -168,6 +178,11 @@ TOOL_REGISTRY: Dict[str, Callable] = {
     "project.stop":           stop_project,
     "canvas.add_text":        canvas_add_text,
     "canvas.add_image":       canvas_add_image,
+    "canvas.add_image_url":   canvas_add_image_url,
+    "canvas.add_plan":        canvas_add_plan,
+    "canvas.add_schedule":    canvas_add_schedule,
+    "canvas.add_flowchart":   canvas_add_flowchart,
+    "canvas.zoom":            canvas_zoom,
     "canvas.remove_last":     canvas_remove_last,
     "canvas.clear":           canvas_clear,
 }

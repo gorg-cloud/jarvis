@@ -54,7 +54,7 @@ from jarvis.hud.theme import BG, CYAN, WHITE_DIM, mono
 from jarvis.app.worker import JarvisWorker
 from jarvis.camera.canvas_api import clear_target as canvas_clear_target
 from jarvis.camera.canvas_api import set_target as canvas_set_target
-from jarvis.camera.project import ProjectCanvas, ProjectRail
+from jarvis.camera.project import CameraPip, ProjectCanvas, ProjectRail
 from jarvis.engine.speaker import speak
 
 _CYAN = QColor("#00f0ff")
@@ -788,13 +788,19 @@ class GestureWindow(QMainWindow):
         self._canvas_text.hide()
         cv.addWidget(self._canvas_text)
         # MODE 3 · PROJECT — clean black/white fullscreen canvas with a small
-        # JARVIS panel on the side (chat, picture pins, suggest, save).
+        # JARVIS panel on the side (chat, picture pins, suggest, save) and a
+        # little camera preview so you can see your hand while drawing.
         self._project_page = QWidget()
         pp = QHBoxLayout(self._project_page)
         pp.setContentsMargins(0, 0, 0, 0)
         pp.setSpacing(12)
         self._project_canvas = ProjectCanvas()
+        self._project_canvas.drawing_ended.connect(self._on_mouse_stroke_end)
         pp.addWidget(self._project_canvas, stretch=1)
+        pside = QVBoxLayout()
+        pside.setSpacing(8)
+        self._camera_pip = CameraPip()
+        pside.addWidget(self._camera_pip)
         self._rail = ProjectRail()
         self._rail.submitted.connect(self._project_query)
         self._rail.voice_requested.connect(self._panel_voice)
@@ -804,7 +810,12 @@ class GestureWindow(QMainWindow):
         self._rail.suggest_requested.connect(self._panel_suggest)
         self._rail.save_requested.connect(self._save_project)
         self._rail.new_requested.connect(self._new_project)
-        pp.addWidget(self._rail)
+        self._rail.zoom_in_requested.connect(lambda: self._project_canvas.zoom_at(1.25))
+        self._rail.zoom_out_requested.connect(lambda: self._project_canvas.zoom_at(0.8))
+        self._rail.zoom_reset_requested.connect(self._project_canvas.zoom_reset)
+        self._rail.cam_toggled.connect(self._camera_pip.setVisible)
+        pside.addWidget(self._rail, stretch=1)
+        pp.addLayout(pside)
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self._video)
@@ -1093,7 +1104,7 @@ class GestureWindow(QMainWindow):
             self._set_immersive(True)
             canvas_set_target(self._project_canvas)
             self._status.setText("MODE 3 — PROJECT")
-            self._hint_label.setText("pinch=draw · open=move · panel: screen/snap/remove/suggest/save")
+            self._hint_label.setText("pinch=draw · +/- zoom · panel: screen/snap/remove/suggest/save · ask JARVIS for plans")
             self.showFullScreen()
             self._greet_project()
             return
@@ -1181,7 +1192,14 @@ class GestureWindow(QMainWindow):
         self._pause_btn.setText("RESUME" if paused else "PAUSE")
 
     def _on_frame(self, frame, hands, pinch, status, clicks, nx, ny) -> None:
-        self._video.set_frame(frame, hands, pinch, status)
+        # In modes 2/3 the big video widget is hidden — don't burn allocations
+        # (and paint work) feeding it frames; that churn contributed to a
+        # fullscreen repaint crash after ~10 minutes. Mode 3 gets the tiny
+        # camera preview instead (small widget = cheap repaints).
+        if self._stack.currentIndex() == 0:
+            self._video.set_frame(frame, hands, pinch, status)
+        elif self._mode == 3:
+            self._camera_pip.set_frame(frame, hands, pinch, status)
         if frame is not None:
             self._latest_frame = frame
         if self._mode in (2, 3):
@@ -1339,6 +1357,12 @@ class GestureWindow(QMainWindow):
         if self._mode == 3:
             self._project_canvas.set_cursor(nx, ny)
 
+    def _on_mouse_stroke_end(self) -> None:
+        """After a mouse-drawn stroke, kick the same auto-OCR timer the hand
+        path uses (paused drawing -> handwriting becomes a text note)."""
+        if self._mode == 3 and self._project_canvas.has_strokes():
+            self._ocr_timer.start()
+
     # ---- JARVIS panel actions --------------------------------------------
 
     def _panel_voice(self) -> None:
@@ -1460,18 +1484,30 @@ class GestureWindow(QMainWindow):
         self._video.show_message(msg)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
+        if self._mode == 3:
+            k = event.key()
+            if k in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+                self._project_canvas.zoom_at(1.25)
+                return
+            if k == Qt.Key.Key_Minus:
+                self._project_canvas.zoom_at(0.8)
+                return
+            if k == Qt.Key.Key_0:
+                self._project_canvas.zoom_reset()
+                return
+            if event.matches(QKeySequence.StandardKey.Paste):
+                self._paste_image()
+                return
         if event.key() == Qt.Key.Key_Escape:
             if self._mode == 3 and self.isFullScreen():
                 self._exit_immersive()     # Esc leaves fullscreen, stays in Mode 3
                 return
             self.close()
             return
-        if self._mode == 3 and event.matches(QKeySequence.StandardKey.Paste):
-            self._paste_image()
-            return
         super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        _debug("gesture window closing")
         canvas_clear_target()
         self._thread.stop()
         self._thread.wait(2000)
