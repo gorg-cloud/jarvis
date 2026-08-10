@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=1920, initial-scale=1" />
+  <title>JARVIS HUD</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Syne+Mono&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="scanlines" aria-hidden="true"></div>
+
+  <main class="hud" id="hud">
+
+    <header class="topbar">
+      <div class="topbar__left">
+        <span class="brand">JARVIS</span>
+        <span class="status" id="status">
+          <span class="status__pulse" aria-hidden="true"></span>
+          <span class="status__dot">●</span>
+          <span class="status__text">ONLINE</span>
+        </span>
+      </div>
+      <div class="topbar__right">
+        <span class="clock" id="clock">00:00:00</span>
+        <button class="kill" id="kill" title="Close JARVIS HUD" aria-label="Close JARVIS HUD">⏻</button>
+      </div>
+    </header>
+
+    <section class="split">
+
+      <!-- LEFT: TELEMETRY -->
+      <article class="panel panel--active" id="panel-telemetry" data-label="TELEMETRY">
+        <h2 class="panel__label">TELEMETRY</h2>
+        <div class="gauges">
+          <div class="gauge" data-key="cpu">
+            <svg viewBox="0 0 160 160" class="gauge__svg" aria-label="CPU">
+              <circle class="gauge__track" cx="80" cy="80" r="58" />
+              <circle class="gauge__value" cx="80" cy="80" r="58" />
+            </svg>
+            <div class="gauge__readout">
+              <span class="gauge__num" data-bind="cpu">0</span>
+              <span class="gauge__unit">%</span>
+            </div>
+            <div class="gauge__name">CPU</div>
+          </div>
+          <div class="gauge" data-key="ram">
+            <svg viewBox="0 0 160 160" class="gauge__svg" aria-label="RAM">
+              <circle class="gauge__track" cx="80" cy="80" r="58" />
+              <circle class="gauge__value" cx="80" cy="80" r="58" />
+            </svg>
+            <div class="gauge__readout">
+              <span class="gauge__num" data-bind="ram">0</span>
+              <span class="gauge__unit">%</span>
+            </div>
+            <div class="gauge__name">RAM</div>
+          </div>
+          <div class="gauge" data-key="bat">
+            <svg viewBox="0 0 160 160" class="gauge__svg" aria-label="BATTERY">
+              <circle class="gauge__track" cx="80" cy="80" r="58" />
+              <circle class="gauge__value" cx="80" cy="80" r="58" />
+            </svg>
+            <div class="gauge__readout">
+              <span class="gauge__num" data-bind="bat">0</span>
+              <span class="gauge__unit">%</span>
+            </div>
+            <div class="gauge__name" id="bat-name">BATTERY</div>
+          </div>
+        </div>
+        <canvas class="graph" id="ram-graph" data-label="MEMORY %" aria-label="Memory graph"></canvas>
+      </article>
+
+      <!-- CENTER: CONSOLE -->
+      <article class="panel" id="panel-console" data-label="CONSOLE">
+        <h2 class="panel__label">CONSOLE</h2>
+        <div class="console" id="console" aria-live="polite"></div>
+      </article>
+
+      <!-- RIGHT: SYSTEM -->
+      <article class="panel" id="panel-system" data-label="SYSTEM">
+        <h2 class="panel__label">SYSTEM</h2>
+        <dl class="meta">
+          <div class="meta__row"><dt>HOST</dt><dd id="meta-host">—</dd></div>
+          <div class="meta__row"><dt>OS</dt><dd id="meta-os">—</dd></div>
+          <div class="meta__row"><dt>UPLINK</dt><dd id="meta-uplink">disconnected</dd></div>
+        </dl>
+        <canvas class="graph" id="cpu-graph" data-label="CPU %" aria-label="CPU graph"></canvas>
+        <div class="conn" id="conn">BT: waiting…</div>
+      </article>
+
+    </section>
+
+  </main>
+
+  <script src="widgets.js"></script>
+  <script src="telemetry.js"></script>
+</body>
+</html>

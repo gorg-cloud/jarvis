@@ -1,0 +1,28 @@
+# ── Secrets & credentials (never commit these) ──────────────
+.env
+.env.*
+!.env.example
+signing/
+launchd/
+config/
+.claude/
+
+# ── Python / build artifacts ────────────────────────────────
+.venv/
+dist/
+build/
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Vendor / scratch ────────────────────────────────────────
+three.js-master/
+get-pip.py
+test_notion.py
+test_obsidian.py
+
+# ── macOS ───────────────────────────────────────────────────
+.DS_Store
+
+# ── Workspace metadata ──────────────────────────────────────
+.freebuff/
