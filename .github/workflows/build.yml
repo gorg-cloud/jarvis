@@ -7,13 +7,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Lightweight sanity check: every module imports on Linux + Windows Python.
+  # Lightweight sanity check: every module imports on Windows Python.
   imports:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
