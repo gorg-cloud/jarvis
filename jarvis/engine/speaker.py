@@ -115,6 +115,8 @@ def _piper(text: str) -> None:
     Piper TTS (local neural TTS) — the human-sounding default.
     Needs a piper CLI (PIPER_BIN, auto-detected) + a voice model
     (PIPER_MODEL, defaults to the downloaded British voice).
+    `PIPER_LENGTH_SCALE` (<1 = faster/livelier, >1 = slower/dramatic)
+    and `PIPER_SENTENCE_SILENCE` tune the delivery.
     """
     bin_path = _piper_bin()
     model_path = os.getenv("PIPER_MODEL") or _PIPER_DEFAULT_MODEL
@@ -124,8 +126,15 @@ def _piper(text: str) -> None:
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             out_path = f.name
+        cmd = [bin_path, "-m", model_path, "-f", out_path]
+        length_scale = os.getenv("PIPER_LENGTH_SCALE", "0.88").strip()
+        silence = os.getenv("PIPER_SENTENCE_SILENCE", "0.22").strip()
+        try:
+            cmd += ["--length-scale", length_scale, "--sentence-silence", silence]
+        except Exception:
+            pass
         subprocess.run(
-            [bin_path, "-m", model_path, "-f", out_path],
+            cmd,
             input=text[:1000], text=True, check=True, timeout=60,
         )
         subprocess.run(["afplay", out_path], check=True)

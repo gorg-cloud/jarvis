@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -36,7 +37,7 @@ import cv2
 import numpy as np
 
 from PyQt6.QtCore import QPointF, QRectF, QThread, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QRadialGradient
+from PyQt6.QtGui import QColor, QFont, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient
 from PyQt6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QMainWindow, QPushButton,
     QSlider, QStackedWidget, QVBoxLayout, QWidget,
@@ -49,6 +50,12 @@ from jarvis.camera.control import (
 from jarvis.camera.gestures import GestureEngine
 from jarvis.camera.tracker import HandTracker
 from jarvis.hud.theme import BG, CYAN, WHITE_DIM, mono
+
+from jarvis.app.worker import JarvisWorker
+from jarvis.camera.canvas_api import clear_target as canvas_clear_target
+from jarvis.camera.canvas_api import set_target as canvas_set_target
+from jarvis.camera.project import ProjectCanvas, ProjectRail
+from jarvis.engine.speaker import speak
 
 _CYAN = QColor("#00f0ff")
 _CYAN_DIM = QColor(0, 240, 255, 150)
@@ -153,6 +160,7 @@ class _CaptureThread(QThread):
     """Grabs webcam frames, runs hand tracking, drives the real mouse."""
 
     frame_ready = pyqtSignal(object, object, bool, str, int, float, float)  # frame, hands, pinch, status, clicks, cursor_nx, cursor_ny
+    aim = pyqtSignal(float, float)      # raw fingertip position (0..1) — always, for aiming
     failed = pyqtSignal(str)
 
     def __init__(self, parent=None) -> None:
@@ -356,6 +364,7 @@ class _CaptureThread(QThread):
                                 sum(p[0] for p in self._recent) / len(self._recent),
                                 sum(p[1] for p in self._recent) / len(self._recent),
                             )
+                            self.aim.emit(avg[0], avg[1])
                             if self._pen_pinch.pinched:
                                 cursor_nx, cursor_ny = avg  # pen down
                                 status = "WRITING — PINCH HELD"
@@ -372,6 +381,39 @@ class _CaptureThread(QThread):
         finally:
             cap.release()
             tracker.close()
+
+
+class _VoiceThread(QThread):
+    """Listen for ONE spoken command via the configured STT engine and emit
+    the transcript (or an error). Used by the project panel's 🎤 button."""
+
+    transcript = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def run(self) -> None:
+        import speech_recognition as sr
+        try:
+            from jarvis.engine.stt import make_stt
+            microphone = sr.Microphone()
+            stt = make_stt()
+        except Exception as exc:
+            self.failed.emit(f"Microphone unavailable: {exc}")
+            return
+        try:
+            with microphone as source:
+                audio = stt.listen(source, phrase_time_limit=20)
+            text = stt.recognize(audio)
+        except sr.UnknownValueError:
+            self.failed.emit("I couldn't hear that clearly, sir.")
+            return
+        except sr.WaitTimeoutError:
+            self.failed.emit("I didn't hear anything, sir.")
+            return
+        except Exception as exc:
+            self.failed.emit(f"Voice error: {exc}")
+            return
+        if text:
+            self.transcript.emit(text)
 
 
 class _VideoWidget(QWidget):
@@ -642,11 +684,15 @@ class GestureWindow(QMainWindow):
 
         self._thread = _CaptureThread()
         self._thread.frame_ready.connect(self._on_frame)
+        self._thread.aim.connect(self._on_aim)
         self._thread.failed.connect(self._on_failed)
 
         self._perm = _PermissionThread()
         self._perm.granted.connect(self._on_permission)
         self._opened_settings = False
+        self._latest_frame = None      # latest camera frame (for 🎥 SNAP)
+        self._suggesting = False       # SUGGEST reply gets pinned to the canvas
+        self._voice_thread: _VoiceThread | None = None
 
         self._build_ui()
         self._setup_shortcuts()
@@ -664,7 +710,8 @@ class GestureWindow(QMainWindow):
         root.setContentsMargins(14, 12, 14, 12)
         root.setSpacing(10)
 
-        header = QHBoxLayout()
+        self._chrome_top = QWidget()
+        header = QHBoxLayout(self._chrome_top)
         header.setSpacing(12)
 
         title_box = QVBoxLayout()
@@ -684,25 +731,26 @@ class GestureWindow(QMainWindow):
         self._status.setFont(mono(10, bold=True))
         self._status.setStyleSheet(f"color: {CYAN.name()}; background: transparent;")
         header.addWidget(self._status)
-        root.addLayout(header)
+        root.addWidget(self._chrome_top)
 
-        divider = QWidget()
-        divider.setFixedHeight(2)
-        divider.setStyleSheet(
+        self._divider = QWidget()
+        self._divider.setFixedHeight(2)
+        self._divider.setStyleSheet(
             "background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
             " stop:0 rgba(0,240,255,0), stop:0.5 rgba(0,240,255,160), stop:1 rgba(0,240,255,0));"
         )
-        root.addWidget(divider)
+        root.addWidget(self._divider)
 
         # ---- Mode switcher -------------------------------------------------
-        mode_row = QHBoxLayout()
+        self._mode_chrome = QWidget()
+        mode_row = QHBoxLayout(self._mode_chrome)
         mode_row.setSpacing(8)
         mode_lab = QLabel("MODE")
         mode_lab.setFont(mono(9, bold=True))
         mode_lab.setStyleSheet(f"color: {WHITE_DIM.name()}; background: transparent;")
         mode_row.addWidget(mode_lab)
         self._mode_buttons = {}
-        for mid, label in ((1, "1 · CURSOR"), (2, "2 · WHITEBOARD")):
+        for mid, label in ((1, "1 · CURSOR"), (2, "2 · WHITEBOARD"), (3, "3 · PROJECT")):
             b = QPushButton(label)
             b.setFont(mono(9, bold=True))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -710,7 +758,7 @@ class GestureWindow(QMainWindow):
             mode_row.addWidget(b)
             self._mode_buttons[mid] = b
         mode_row.addStretch()
-        root.addLayout(mode_row)
+        root.addWidget(self._mode_chrome)
 
         self._mode = 1
         self._prev_draw = None
@@ -739,14 +787,35 @@ class GestureWindow(QMainWindow):
         self._canvas_text.setMinimumHeight(64)
         self._canvas_text.hide()
         cv.addWidget(self._canvas_text)
+        # MODE 3 · PROJECT — clean black/white fullscreen canvas with a small
+        # JARVIS panel on the side (chat, picture pins, suggest, save).
+        self._project_page = QWidget()
+        pp = QHBoxLayout(self._project_page)
+        pp.setContentsMargins(0, 0, 0, 0)
+        pp.setSpacing(12)
+        self._project_canvas = ProjectCanvas()
+        pp.addWidget(self._project_canvas, stretch=1)
+        self._rail = ProjectRail()
+        self._rail.submitted.connect(self._project_query)
+        self._rail.voice_requested.connect(self._panel_voice)
+        self._rail.screen_requested.connect(self._panel_screenshot)
+        self._rail.snap_requested.connect(self._panel_snap)
+        self._rail.remove_requested.connect(self._panel_remove)
+        self._rail.suggest_requested.connect(self._panel_suggest)
+        self._rail.save_requested.connect(self._save_project)
+        self._rail.new_requested.connect(self._new_project)
+        pp.addWidget(self._rail)
+
         self._stack = QStackedWidget()
         self._stack.addWidget(self._video)
         self._stack.addWidget(self._canvas_page)
+        self._stack.addWidget(self._project_page)
 
         main = QHBoxLayout()
         main.setSpacing(14)
         main.addWidget(self._stack, stretch=1)
-        side = QVBoxLayout()
+        self._side_panel = QWidget()
+        side = QVBoxLayout(self._side_panel)
         side.setSpacing(6)
         side_label = QLabel("◉ CURSOR POSITION")
         side_label.setFont(mono(9, bold=True))
@@ -786,7 +855,7 @@ class GestureWindow(QMainWindow):
         side.addWidget(reset_btn)
 
         side.addStretch()
-        main.addLayout(side)
+        main.addWidget(self._side_panel)
         root.addLayout(main, stretch=1)
 
         # Whiteboard toolbar (mode 2 only) — wrapped in a widget so it can
@@ -835,7 +904,51 @@ class GestureWindow(QMainWindow):
         root.addWidget(self._canvas_row_widget)
         self._canvas_row_widget.setVisible(False)
 
-        info = QHBoxLayout()
+        # Project toolbar (mode 3 only).
+        self._project_row_widget = QWidget()
+        prow = QHBoxLayout(self._project_row_widget)
+        prow.setContentsMargins(0, 0, 0, 0)
+        prow.setSpacing(8)
+        color_lab2 = QLabel("COLOR")
+        color_lab2.setFont(mono(8, bold=True))
+        color_lab2.setStyleSheet(f"color: {WHITE_DIM.name()}; background: transparent;")
+        prow.addWidget(color_lab2)
+        self._project_swatches = {}
+        for name, hexv in (("CYAN 1", "#00f0ff"), ("WHITE 2", "#ffffff"), ("BLACK 3", "#111111"),
+                           ("RED 4", "#ff4444"), ("GREEN 5", "#44ff88"), ("YELLOW 6", "#ffd400")):
+            b = QPushButton()
+            b.setFixedSize(26, 26)
+            b.setToolTip(f"{name} — press {name[-1]} on keyboard")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _c, h=hexv: self._set_marker_color(h))
+            prow.addWidget(b)
+            self._project_swatches[hexv] = b
+        new_btn = QPushButton("✨ NEW PROJECT")
+        new_btn.clicked.connect(self._new_project)
+        clear_p = QPushButton("CLEAR")
+        clear_p.clicked.connect(self._project_canvas.clear)
+        self._convert_p_btn = QPushButton("✎ CONVERT TO TEXT")
+        self._convert_p_btn.clicked.connect(self._convert_canvas)
+        self._save_p_btn = QPushButton("💾 SAVE TO OBSIDIAN")
+        self._save_p_btn.clicked.connect(self._save_project)
+        for b in (new_btn, clear_p, self._convert_p_btn, self._save_p_btn):
+            b.setFont(mono(9, bold=True))
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(
+                "QPushButton { background: #0a0a0e; color: #8fd8e0;"
+                " border: 1px solid rgba(0,240,255,0.5); border-radius: 6px; padding: 7px 12px; }"
+                "QPushButton:hover { background: #0e1a20; }"
+            )
+        prow.addWidget(new_btn)
+        prow.addWidget(clear_p)
+        prow.addStretch()
+        prow.addWidget(self._convert_p_btn)
+        prow.addWidget(self._save_p_btn)
+        root.addWidget(self._project_row_widget)
+        self._project_row_widget.setVisible(False)
+
+        self._info_row = QWidget()
+        info = QHBoxLayout(self._info_row)
         self._clicks = QLabel("CLICKS: 0")
         self._clicks.setFont(mono(10, bold=True))
         self._clicks.setStyleSheet(f"color: {WHITE_DIM.name()}; background: transparent;")
@@ -845,9 +958,10 @@ class GestureWindow(QMainWindow):
         self._hint_label.setFont(mono(8))
         self._hint_label.setStyleSheet(f"color: {WHITE_DIM.name()}; background: transparent;")
         info.addWidget(self._hint_label)
-        root.addLayout(info)
+        root.addWidget(self._info_row)
 
-        buttons = QHBoxLayout()
+        self._buttons_row = QWidget()
+        buttons = QHBoxLayout(self._buttons_row)
         buttons.addStretch()
         accel_btn = QPushButton("ENABLE ACCESSIBILITY")
         accel_btn.clicked.connect(self._open_accessibility_settings)
@@ -871,7 +985,7 @@ class GestureWindow(QMainWindow):
             )
         buttons.addWidget(self._pause_btn)
         buttons.addWidget(stop_btn)
-        root.addLayout(buttons)
+        root.addWidget(self._buttons_row)
 
         self.setCentralWidget(central)
 
@@ -942,21 +1056,54 @@ class GestureWindow(QMainWindow):
 
     # ---------------------------------------------------------------- modes
 
+    def _set_immersive(self, on: bool) -> None:
+        """Mode 3 goes fullscreen with all chrome hidden — just the B&W canvas
+        and the small JARVIS panel."""
+        for w in (self._chrome_top, self._divider, self._mode_chrome,
+                  self._side_panel, self._info_row, self._buttons_row,
+                  self._canvas_row_widget, self._project_row_widget):
+            w.setVisible(not on)
+
+    def _exit_immersive(self) -> None:
+        if self.isFullScreen():
+            self.showNormal()
+        self._set_immersive(False)
+        canvas_clear_target()
+
     def _select_mode(self, mid: int) -> None:
         if mid == 2:
+            self._exit_immersive()
             self._mode = 2
             self._thread.set_mode(2)
             self._stack.setCurrentIndex(1)
             self._canvas_row_widget.setVisible(True)
+            self._project_row_widget.setVisible(False)
+            self._project_canvas.set_cursor(-1, -1)
             self._prev_draw = None
             self._paint_mode_buttons()
             self._status.setText("WHITEBOARD — PINCH TO WRITE")
             self._hint_label.setText("pinch=write · open=move · 1-6=color · ✎ convert → save to Obsidian")
             return
+        if mid == 3:
+            self._mode = 3
+            self._thread.set_mode(3)
+            self._stack.setCurrentIndex(2)
+            self._prev_draw = None
+            self._paint_mode_buttons()
+            self._set_immersive(True)
+            canvas_set_target(self._project_canvas)
+            self._status.setText("MODE 3 — PROJECT")
+            self._hint_label.setText("pinch=draw · open=move · panel: screen/snap/remove/suggest/save")
+            self.showFullScreen()
+            self._greet_project()
+            return
+        self._exit_immersive()
         self._mode = 1
         self._thread.set_mode(1)
         self._stack.setCurrentIndex(0)
         self._canvas_row_widget.setVisible(False)
+        self._project_row_widget.setVisible(False)
+        self._project_canvas.set_cursor(-1, -1)
         self._paint_mode_buttons()
         self._status.setText("MODE 1 — CURSOR")
         self._hint_label.setText("pinch=click · th+mid=right-click · peace 3s=close app · fist swipe=desktop")
@@ -1035,21 +1182,30 @@ class GestureWindow(QMainWindow):
 
     def _on_frame(self, frame, hands, pinch, status, clicks, nx, ny) -> None:
         self._video.set_frame(frame, hands, pinch, status)
-        if self._mode == 2:
+        if frame is not None:
+            self._latest_frame = frame
+        if self._mode in (2, 3):
+            canvas = self._canvas if self._mode == 2 else self._project_canvas
             if nx >= 0:
-                cw = max(1, self._canvas.width())
-                ch = max(1, self._canvas.height())
-                x, y = nx * cw, ny * ch
+                if self._mode == 2:
+                    # Whiteboard canvas stores pixel coords.
+                    cw = max(1, canvas.width())
+                    ch = max(1, canvas.height())
+                    x, y = nx * cw, ny * ch
+                else:
+                    # Project canvas stores NORMALIZED coords (resizes fine
+                    # fullscreen) — pass them straight through.
+                    x, y = nx, ny
                 if self._prev_draw is None:
-                    self._canvas.begin(x, y)
+                    canvas.begin(x, y)
                     self._ocr_timer.stop()
                 else:
-                    self._canvas.add(x, y)
+                    canvas.add(x, y)
                 self._prev_draw = (x, y)
             else:
-                self._canvas.end()
+                canvas.end()
                 self._prev_draw = None
-                if self._canvas.has_strokes():
+                if canvas.has_strokes():
                     self._ocr_timer.start()
         if self._accel:
             self._status.setText(status)
@@ -1061,7 +1217,7 @@ class GestureWindow(QMainWindow):
     def _auto_convert(self) -> None:
         """Debounced auto-OCR: after a pause in drawing, turn the handwriting
         into text below the canvas (Marker Felt = whiteboard font)."""
-        if self._mode == 2 and self._canvas.has_strokes():
+        if self._mode in (2, 3):
             self._convert_canvas()
 
     def _set_marker_color(self, hexv: str) -> None:
@@ -1071,25 +1227,39 @@ class GestureWindow(QMainWindow):
                 f"QPushButton {{ background: {h}; border: 2px solid"
                 f" {'#00f0ff' if h == hexv else '#333'}; border-radius: 4px; }}"
             )
+        for h, b in getattr(self, "_project_swatches", {}).items():
+            b.setStyleSheet(
+                f"QPushButton {{ background: {h}; border: 2px solid"
+                f" {'#00f0ff' if h == hexv else '#333'}; border-radius: 4px; }}"
+            )
+        # Mode 2 (whiteboard) only — Mode 3 stays black & white.
         self._canvas.set_brush(QColor(hexv), self._size_slider.value())
 
     def _convert_canvas(self) -> None:
-        if not self._canvas.has_strokes():
+        if self._mode == 3:
+            canvas = self._project_canvas
+        else:
+            canvas, label = self._canvas, self._canvas_text
+        if not canvas.has_strokes():
             self._status.setText("NOTHING TO CONVERT — DRAW FIRST")
             return
         self._status.setText("READING HANDWRITING…")
         tmp = os.path.expanduser("~/.jarvis/whiteboard_ocr.png")
         try:
-            self._canvas.render_image(scale=2.0, ink="#000000").save(tmp)
+            canvas.render_image(scale=2.0, ink="#000000").save(tmp)
             text = _ocr_image(tmp)
         except Exception as exc:
             self._status.setText(f"OCR ERROR: {exc}")
             return
         if text:
-            self._canvas_text.setText(f"“{text}”")
-            self._canvas_text.show()
+            if self._mode == 3:
+                canvas.add_text_item(text)
+                self._rail.append_jarvis(f"Read your writing: “{text}” — added to the canvas.")
+            else:
+                label.setText(f"“{text}”")
+                label.show()
             self._status.setText(f"READ: “{text}”")
-            _debug(f"whiteboard OCR: {text!r}")
+            _debug(f"canvas OCR: {text!r}")
         else:
             self._status.setText("COULDN'T READ IT — WRITE BIGGER, CLEARER LETTERS")
 
@@ -1127,6 +1297,150 @@ class GestureWindow(QMainWindow):
         _debug(f"whiteboard saved: {note}")
         self._status.setText(f"💾 SAVED → {pick['name']} / JARVIS / Whiteboard / {ts}.md")
 
+    # ----------------------------------------------------------- project
+
+    def _greet_project(self) -> None:
+        msg = ("Project canvas ready, sir. Pinch to draw, or use the panel — "
+               "I can pin pictures, take notes, and suggest next steps.")
+        self._rail.append_jarvis(msg)
+        self._speak_async(msg)
+
+    def _new_project(self) -> None:
+        self._project_canvas.clear()
+        self._project_name = "Project " + time.strftime("%Y-%m-%d %H.%M")
+        self._status.setText(f"NEW PROJECT — {self._project_name}")
+        msg = f"New project started: {self._project_name}. The canvas is clear, sir."
+        self._rail.append_jarvis(msg)
+        self._speak_async(msg)
+
+    def _project_query(self, text: str) -> None:
+        self._rail.set_busy(True)
+        self._worker = JarvisWorker(text, parent=self)
+        self._worker.finished_with.connect(self._on_project_reply)
+        self._worker.start()
+
+    def _on_project_reply(self, reply: dict) -> None:
+        self._rail.set_busy(False)
+        msg = reply.get("message") or reply.get("error") or "…"
+        self._rail.append_jarvis(str(msg))
+        self._speak_async(str(msg))
+        if self._suggesting:
+            self._suggesting = False
+            self._project_canvas.add_text_item(str(msg))
+        logs = reply.get("logs") or ""
+        if logs:
+            self._status.setText("JARVIS: " + str(logs).strip().splitlines()[-1][:60])
+
+    def _speak_async(self, text: str) -> None:
+        threading.Thread(target=speak, args=(text,), daemon=True).start()
+
+    def _on_aim(self, nx: float, ny: float) -> None:
+        """Live fingertip reticle on the project canvas (aim before you pinch)."""
+        if self._mode == 3:
+            self._project_canvas.set_cursor(nx, ny)
+
+    # ---- JARVIS panel actions --------------------------------------------
+
+    def _panel_voice(self) -> None:
+        if self._voice_thread is not None and self._voice_thread.isRunning():
+            return
+        self._rail.append_jarvis("Listening…")
+        self._voice_thread = _VoiceThread(parent=self)
+        self._voice_thread.transcript.connect(self._on_voice_text)
+        self._voice_thread.failed.connect(self._on_voice_fail)
+        self._voice_thread.start()
+
+    def _on_voice_text(self, text: str) -> None:
+        self._rail.set_busy(False)
+        self._rail.append_user(text)
+        self._project_query(text)
+
+    def _on_voice_fail(self, msg: str) -> None:
+        self._rail.set_busy(False)
+        self._rail.append_jarvis(msg)
+
+    def _panel_screenshot(self) -> None:
+        path = os.path.expanduser("~/.jarvis/project_screen.png")
+        try:
+            subprocess.run(["screencapture", "-x", path], timeout=10)
+        except Exception:
+            pass
+        pm = QPixmap(path)
+        if pm.isNull():
+            self._rail.append_jarvis(
+                "I couldn't grab the screen, sir — screen-recording permission may be needed."
+            )
+            return
+        self._project_canvas.add_image_item(pm)
+        self._rail.append_jarvis("Pinned a screenshot to the canvas.")
+
+    def _panel_snap(self) -> None:
+        frame = self._latest_frame
+        if frame is None:
+            self._rail.append_jarvis("No camera frame yet, sir.")
+            return
+        h, w, _ = frame.shape
+        img = QImage(frame.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+        self._project_canvas.add_image_item(QPixmap.fromImage(img))
+        self._rail.append_jarvis("Pinned the camera frame to the canvas.")
+
+    def _panel_remove(self) -> None:
+        removed = self._project_canvas.remove_last_item()
+        self._rail.append_jarvis(
+            "Removed the last element, sir." if removed
+            else "The canvas is already empty, sir."
+        )
+
+    def _panel_suggest(self) -> None:
+        self._suggesting = True
+        self._project_query(
+            "Suggest one useful, specific thing to add or do next on this project canvas."
+        )
+
+    def _paste_image(self) -> None:
+        from PyQt6.QtWidgets import QApplication
+        mime = QApplication.clipboard().mimeData()
+        if mime.hasImage():
+            img = QApplication.clipboard().image()
+            self._project_canvas.add_image_item(QPixmap.fromImage(img))
+            self._rail.append_jarvis("Pinned the copied image to the canvas.")
+        else:
+            self._rail.append_jarvis("The clipboard has no image, sir.")
+
+    def _save_project(self) -> None:
+        if not self._project_canvas.has_content():
+            self._status.setText("NOTHING TO SAVE — DRAW OR ADD FIRST")
+            return
+        try:
+            from jarvis.tools.obsidian_tool import _pick_vault
+        except Exception as exc:
+            self._status.setText(f"OBSIDIAN ERROR: {exc}")
+            return
+        pick = _pick_vault()
+        if not pick.get("ok"):
+            self._status.setText("OBSIDIAN: " + str(pick.get("error", "no vault")))
+            return
+        ts = time.strftime("%Y-%m-%d %H.%M.%S")
+        safe = "".join(c for c in self._project_name if c.isalnum() or c in " -_").strip() or "Project"
+        base = pick["path"] / "JARVIS" / "Projects" / safe
+        imgs = base / "images"
+        try:
+            imgs.mkdir(parents=True, exist_ok=True)
+            png = imgs / f"{ts}.png"
+            self._project_canvas.render_image(scale=2.0).save(str(png))
+            content = f"# {self._project_name}\n\n"
+            for t in self._project_canvas.text_contents():
+                content += f"> {t}\n"
+            content += f"\n![[{png.name}]]\n"
+            note = base / f"{ts}.md"
+            note.write_text(content, encoding="utf-8")
+        except Exception as exc:
+            self._status.setText(f"SAVE FAILED: {exc}")
+            _debug(f"project save error: {exc}")
+            return
+        _debug(f"project saved: {note}")
+        self._status.setText(f"💾 SAVED → {pick['name']} / JARVIS / Projects / {safe}")
+
     def _on_permission(self, granted: bool) -> None:
         _debug(f"camera permission result: granted={granted}")
         if not granted:
@@ -1147,11 +1461,18 @@ class GestureWindow(QMainWindow):
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         if event.key() == Qt.Key.Key_Escape:
+            if self._mode == 3 and self.isFullScreen():
+                self._exit_immersive()     # Esc leaves fullscreen, stays in Mode 3
+                return
             self.close()
-        else:
-            super().keyPressEvent(event)
+            return
+        if self._mode == 3 and event.matches(QKeySequence.StandardKey.Paste):
+            self._paste_image()
+            return
+        super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        canvas_clear_target()
         self._thread.stop()
         self._thread.wait(2000)
         super().closeEvent(event)
@@ -1165,6 +1486,9 @@ def run() -> int:
     win.show()
     win.raise_()
     win.activateWindow()
+    if "--project" in sys.argv:
+        _debug("starting in PROJECT mode (3)")
+        win._select_mode(3)
     _debug("gesture window shown")
     return app.exec()
 

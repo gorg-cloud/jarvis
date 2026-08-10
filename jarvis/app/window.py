@@ -389,6 +389,8 @@ class ChatWindow(QMainWindow):
 
         camera_btn = _button("CAMERA ▣")
         camera_btn.clicked.connect(self._open_camera)
+        project_btn = _button("PROJECT ✨")
+        project_btn.clicked.connect(self._open_project)
         send_btn = _button("SEND ▸", accent=True)
         send_btn.clicked.connect(self._send)
         voice_btn = _button("VOICE")
@@ -397,6 +399,7 @@ class ChatWindow(QMainWindow):
         clear_btn.clicked.connect(lambda: self._clear_chat())
 
         input_row.addWidget(camera_btn)
+        input_row.addWidget(project_btn)
         input_row.addWidget(send_btn)
         input_row.addWidget(voice_btn)
         input_row.addWidget(clear_btn)
@@ -537,6 +540,18 @@ class ChatWindow(QMainWindow):
                 self._append_log("📷 Opening JARVIS camera…")
         except Exception as exc:
             self._append_log(f"⚠ Camera: {exc}", error=True)
+
+    def _open_project(self) -> None:
+        """Launch the JARVIS PROJECT canvas (Mode 3 — the Iron Man workshop)."""
+        try:
+            from jarvis.tools.gestures_tool import start_project
+            result = start_project()
+            if result.get("error"):
+                self._append_log("⚠ Project: " + result["error"], error=True)
+            else:
+                self._append_log("✨ Opening PROJECT canvas — pinch to draw…")
+        except Exception as exc:
+            self._append_log(f"⚠ Project: {exc}", error=True)
 
     def _start_voice(self, mode: str) -> None:
         from jarvis.app.voice_thread import VOICE_MODES
