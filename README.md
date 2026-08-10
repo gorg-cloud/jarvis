@@ -4,8 +4,6 @@
 
 JARVIS is a personal AI assistant for macOS that talks, listens, watches, remembers, and runs your machine — a Stark-Industries-style desktop companion built as a native Mac app (PyQt6 + PyInstaller).
 
-This project was built **with AI assistance** — most of the code was written by [Codebuff](https://codebuff.com), an AI pair programmer, in close collaboration with its human operator. That's not a secret we're hiding; it's the entire point of the project. Every feature below was designed together, then implemented and debugged with the AI.
-
 ---
 
 ## ✨ What it does
