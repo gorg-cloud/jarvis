@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Lightweight sanity check: every module imports on Windows + macOS Python.
+  # Lightweight sanity check: every module imports on Linux + Windows Python.
   imports:
     strategy:
       fail-fast: false
@@ -20,26 +20,13 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install deps
+        shell: pwsh
         run: |
-          pip install PyQt6 fastapi "uvicorn[standard]" websockets python-dotenv \
-            httpx requests SpeechRecognition notion-client opencv-contrib-python \
+          pip install PyQt6 fastapi "uvicorn[standard]" websockets python-dotenv `
+            httpx requests SpeechRecognition notion-client opencv-contrib-python `
             mediapipe matplotlib
       - name: Import every module
-        run: python -c "
-          import sys;
-          sys.path.insert(0, '.');
-          import jarvis.platform;
-          import jarvis.camera.window, jarvis.camera.selftest, jarvis.camera.project;
-          import jarvis.engine.speaker, jarvis.voice, jarvis.menu;
-          import jarvis.tools.obsidian_tool, jarvis.tools.spotify_tool, jarvis.tools.calendar_tool;
-          import jarvis.tools.system_tools, jarvis.tools.files_tool, jarvis.tools.notify_tool;
-          import jarvis.tools.system_extras, jarvis.tools.focus_tool, jarvis.tools.clipboard_tool;
-          import jarvis.tools.context_tool, jarvis.tools.mail_tool, jarvis.tools.contacts_tools;
-          import jarvis.tools.mac_apps, jarvis.tools.alarms_tool, jarvis.tools.findmy_tool;
-          import jarvis.tools.app_position_tool, jarvis.tools.reminders_tool;
-          import jarvis.app.main;
-          print('ALL IMPORTS OK on', sys.platform)
-          "
+        run: python scripts/smoke_imports.py
 
   windows-build:
     runs-on: windows-latest
@@ -50,11 +37,11 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install deps
+        shell: pwsh
         run: |
           pip install PyQt6 pyinstaller fastapi "uvicorn[standard]" websockets python-dotenv `
             httpx requests SpeechRecognition notion-client opencv-contrib-python `
             mediapipe matplotlib
-        shell: pwsh
       - name: Generate icons
         run: python -m jarvis.app.make_icon --ico
       - name: Build with PyInstaller
